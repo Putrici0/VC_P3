@@ -19,7 +19,9 @@ Las tareas planteadas consisten en identificar monedas y calcular su valor total
 
 ## Instalación y ejecución
 
-*Pendiente de completar según los archivos y requisitos necesarios para ejecutar la práctica.*
+No se necesita instalar nada adicional respecto al entorno indicado en el [README de la práctica original proporcionada por el profesor](https://github.com/otsedom/otsedom.github.io/blob/main/VC/P3/README.md). Con ese entorno es suficiente para ejecutar el cuaderno `VC_P3.ipynb`.
+
+Para la tarea de detección de monedas en tiempo real, el equipo debe disponer de una webcam y tener habilitados los permisos necesarios para acceder a ella.
 
 ## TAREA: detección y clasificación de monedas
 
