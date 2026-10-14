@@ -1,4 +1,4 @@
-
+﻿
 # Práctica 3 - Visión por Computador
 
 Este repositorio contiene la tercera práctica de la asignatura Visión por Computador. En esta práctica se trabaja con Python, OpenCV, NumPy y Matplotlib para detectar objetos, analizar sus características geométricas y clasificarlos a partir de imágenes.
@@ -12,7 +12,10 @@ Las tareas planteadas consisten en identificar monedas y calcular su valor total
 
 ## Contenido del repositorio
 
-*Pendiente de completar conforme avance el desarrollo de la práctica.*
+- `VC_P3.ipynb`: cuaderno principal donde se desarrolla la práctica y se encuentran las distintas tareas realizadas.
+- `imagenes/monedas/`: imágenes utilizadas en la detección y clasificación de monedas.
+- `imagenes/microplasticos/`: imágenes de prueba y referencia para microplásticos.
+- `datos/`: CSV con las anotaciones de las imágenes de microplásticos.
 
 ## Instalación y ejecución
 
