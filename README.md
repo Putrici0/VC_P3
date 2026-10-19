@@ -16,6 +16,7 @@ Las tareas planteadas consisten en identificar monedas y calcular su valor total
 - `imagenes/monedas/`: imágenes utilizadas en la detección y clasificación de monedas.
 - `imagenes/microplasticos/`: imágenes de prueba y referencia para microplásticos.
 - `datos/`: CSV con las anotaciones de las imágenes de microplásticos.
+- `resultados/`: carpeta que contiene las imágenes generadas durante la práctica.
 
 ## Instalación y ejecución
 
