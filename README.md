@@ -48,7 +48,7 @@ La clasificación combina **color y tamaño**. El color se analiza en HSV median
 
 **Resultado sobre la imagen fija:**
 
-![Clasificación de monedas en imagen fija](resultados/deteccion_monedas.jng)
+![Clasificación de monedas en imagen fija](resultados/deteccion_monedas.jpg)
 
 ### 2. Detección de monedas en tiempo real
 
