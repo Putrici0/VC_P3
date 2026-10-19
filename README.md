@@ -23,93 +23,219 @@ No se necesita instalar nada adicional respecto al entorno indicado en el [READM
 
 Para la tarea de detección de monedas en tiempo real, el equipo debe disponer de una webcam y tener habilitados los permisos necesarios para acceder a ella.
 
-## TAREA 1: detección y clasificación de monedas
+# TAREA 1: detección y clasificación de monedas
 
-El objetivo de esta tarea es **detectar monedas de euro, reconocer su valor y calcular el importe total** utilizando técnicas de visión por computador. Hemos desarrollado dos versiones: una sobre una imagen fija y otra que procesa los fotogramas de una webcam en tiempo real. Ambas utilizan OpenCV y características geométricas, sin recurrir a modelos de aprendizaje profundo. La versión de imagen fija también utiliza el análisis del color para mejorar la clasificación.
+El objetivo es detectar monedas de euro en una imagen, estimar su diámetro y calcular el importe total. Se han implementado dos versiones: una procesa una imagen guardada y otra trabaja en tiempo real con la webcam.
 
-### 1. Detección en una imagen fija
+## 1. Imagen fija
 
-Trabajamos con `imagenes/monedas/Monedas.jpg`. Primero convertimos la imagen a escala de grises y aplicamos un filtro gaussiano para suavizar pequeñas variaciones. Después, **Canny** detecta los bordes y un **cierre morfológico** conecta pequeños huecos. Finalmente, `findContours()` obtiene los contornos externos.
+### 1.1. Carga y preprocesamiento
+
+La imagen se carga con OpenCV y se convierte a escala de grises, ya que para detectar los contornos no necesitamos conservar el color. Después se aplica un desenfoque gaussiano para reducir el ruido.
 
 ```python
+img = cv2.imread("imagenes/monedas/Monedas.jpg")
 gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 suave = cv2.GaussianBlur(gris, (5, 5), 0)
+
 bordes = cv2.Canny(suave, 50, 150)
 kernel = np.ones((5, 5), np.uint8)
-bordes = cv2.morphologyEx(bordes, cv2.MORPH_CLOSE, kernel, iterations=2)
-contornos, _ = cv2.findContours(bordes, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+bordes = cv2.morphologyEx(
+    bordes, cv2.MORPH_CLOSE, kernel, iterations=2
+)
 ```
 
-No todos los contornos detectados son monedas. Descartamos los que tengan un área inferior al **0,02 %** o superior al **20 %** del área de la imagen, así como los que tengan perímetro nulo. También comprobamos su **circularidad**, calculada como `4 * π * área / perímetro²`. Aceptamos valores a partir de `0.65`.
+`Canny` detecta los bordes de la imagen usando los umbrales 50 y 150. Después, la operación morfológica `MORPH_CLOSE` cierra pequeños huecos en esos bordes, lo que ayuda a obtener contornos completos.
 
-Para cada contorno válido, `cv2.minEnclosingCircle()` calcula el círculo mínimo que lo contiene. Su radio permite estimar el diámetro de la moneda en píxeles.
+A continuación, se extraen los contornos externos:
 
-#### Calibración
+```python
+contornos, _ = cv2.findContours(
+    bordes, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+)
+```
 
-Para convertir los diámetros medidos en píxeles a milímetros, seleccionamos interactivamente una de las monedas detectadas e introducimos su denominación. El programa utiliza los diámetros oficiales de las monedas de euro para calcular la escala:
+`RETR_EXTERNAL` evita trabajar con contornos internos y `CHAIN_APPROX_SIMPLE` reduce los puntos almacenados de cada contorno.
+
+### 1.2. Filtrado de contornos
+
+La detección de bordes puede encontrar objetos que no son monedas. Por eso, se filtran los contornos usando su área, perímetro y circularidad.
+
+```python
+area = cv2.contourArea(c)
+perimetro = cv2.arcLength(c, True)
+
+if perimetro == 0:
+    continue
+if area < area_img * 0.0002 or area > area_img * 0.20:
+    continue
+
+circularidad = (4 * np.pi * area) / (perimetro ** 2)
+if circularidad < 0.65:
+    continue
+```
+
+- **Área:** se descartan los contornos demasiado pequeños o grandes respecto al área total de la imagen.
+- **Perímetro:** se descarta el contorno si su perímetro es cero, para evitar una división inválida.
+- **Circularidad:** se calcula mediante \(C = 4\pi A/P^2\). Cuanto más se acerca a 1, más circular es el objeto. El umbral `0.65` elimina formas demasiado irregulares.
+
+Para los contornos que superan los filtros, se estima el círculo que los contiene y se obtiene su diámetro en píxeles:
+
+```python
+centro, radio = cv2.minEnclosingCircle(c)
+diametro_px = radio * 2
+```
+
+El programa guarda los datos de cada candidato —como su contorno, centro, diámetro y circularidad— para utilizarlos durante la clasificación.
+
+### 1.3. Selección de la moneda de referencia y calibración
+
+Los candidatos se muestran numerados para que el usuario pueda elegir una moneda cuya denominación conozca. El programa dispone de los diámetros oficiales de las ocho monedas de euro, expresados en milímetros.
+
+Una vez elegida la referencia, calcula la relación entre píxeles y milímetros:
 
 ```python
 mm_por_pixel = diametros_euro[valor_ref] / diametro_ref
+diametro_mm = diametro_px * mm_por_pixel
 ```
 
-La escala obtenida permite estimar el diámetro real de las demás monedas de la imagen. La calibración depende de que las monedas estén aproximadamente en el mismo plano y a una distancia similar de la cámara o de la imagen de referencia.
+`diametros_euro[valor_ref]` es el diámetro real de la moneda seleccionada y `diametro_ref` es el diámetro detectado en píxeles. La escala obtenida se aplica al resto de candidatos para estimar sus diámetros reales.
 
-#### Clasificación por color y diámetro
+Esta calibración es importante: sin ella, el programa solo conocería tamaños en píxeles, que dependen de la resolución y de la distancia a la cámara.
 
-La clasificación combina **color y tamaño**. Convertimos la imagen a HSV y analizamos los píxeles interiores de cada contorno, descartando los brillos extremos. A partir de las proporciones de tonos cobrizos, dorados y poco saturados, el programa distingue tres familias:
+### 1.4. Identificación del color
 
-- **Cobre:** monedas de 1, 2 y 5 céntimos.
-- **Dorado:** monedas de 10, 20 y 50 céntimos.
-- **Bimetálicas:** monedas de 1 y 2 euros.
+En la imagen fija, además del diámetro, se utiliza el color para limitar las denominaciones posibles. La función `detectar_color()` crea una máscara con el contorno de la moneda y analiza únicamente los píxeles de su interior.
 
-Una vez identificada la familia, se compara el diámetro estimado con los diámetros oficiales de las denominaciones de esa familia. Se elige la denominación con menor diferencia respecto al diámetro estimado. Si no se identifica una familia válida o el error supera **1,5 mm**, la moneda se marca como **dudosa** y no se suma al total.
+La imagen se convierte al espacio HSV, que representa el tono, la saturación y el brillo. Se descartan píxeles demasiado oscuros o demasiado claros para reducir la influencia de sombras y reflejos.
 
-**Resultado sobre la imagen fija:**
+La función calcula la proporción de píxeles cobrizos, dorados y neutros. Con esas proporciones decide si la moneda es cobriza, dorada, bimetálica o desconocida. Por ejemplo, las condiciones principales son:
+
+```python
+if prop_cobrizo > 0.30 and prop_cobrizo > prop_dorado:
+    return "cobriza"
+elif prop_dorado > 0.40 and prop_neutro < 0.40:
+    return "dorada"
+elif prop_dorado > 0.15 and prop_neutro > 0.30:
+    return "bimetalica"
+else:
+    return "desconocida"
+```
+
+Los umbrales son heurísticos: ayudan a distinguir familias de monedas, pero la iluminación y los reflejos pueden alterar el color detectado.
+
+Las familias que se consideran son:
+- **Cobrizas:** 1, 2 y 5 céntimos.
+- **Doradas:** 10, 20 y 50 céntimos.
+- **Bimetálicas:** 1 € y 2 €.
+
+### 1.5. Clasificación por diámetro y cálculo del total
+
+Una vez conocida la familia de color, el programa compara el diámetro medido con los diámetros oficiales de las monedas de esa familia. Se queda con la denominación que tenga el menor error absoluto.
+
+```python
+error = abs(diametro_mm - diametro_oficial)
+```
+
+La clasificación solo se acepta si la diferencia entre el diámetro medido y el oficial no supera la tolerancia de `1.5 mm`. Si no hay una coincidencia suficientemente cercana, el candidato se marca como dudoso y no se suma al total.
+
+Cuando una moneda se clasifica correctamente, el programa añade su valor al importe acumulado y actualiza el contador de monedas clasificadas. Finalmente, dibuja los contornos y etiquetas sobre la imagen para distinguir las monedas aceptadas de las dudosas, y muestra el resultado.
+
+### 1.6. Resultado sobre la imagen fija
 
 ![Clasificación de monedas en imagen fija](resultados/deteccion_monedas.jpg)
 
-### 2. Detección de monedas en tiempo real
+**RESULTADO FINAL**
+- Candidatos detectados: 8
+- Monedas clasificadas: 8
+- Monedas dudosas: 0
+- Valor total estimado: 3.88 €
 
-Adaptamos el procesamiento para que se repita continuamente con los fotogramas de la webcam, de forma que el importe mostrado cambie al introducir o retirar monedas. La cámara se abre con `cv2.VideoCapture(0)`.
+## 2. Detección en tiempo real
 
-En cada fotograma, convertimos la imagen a escala de grises, aplicamos Canny con umbrales de 25 y 120, cerramos pequeños huecos mediante una operación morfológica y obtenemos los contornos externos. Después aplicamos los filtros de área y circularidad. En esta versión, la circularidad mínima es `0.70` y se requieren al menos cinco puntos en el contorno antes de calcular el círculo mínimo.
+### 2.1. Captura y procesamiento de cada fotograma
 
-#### Calibración interactiva
+La webcam se abre con `cv2.VideoCapture(0)`. El programa ejecuta un bucle que lee fotogramas continuamente y aplica un procesamiento similar al de la imagen fija.
 
-Antes de clasificar, el programa muestra los contornos candidatos numerados. El usuario pulsa una tecla del **1 al 9** para seleccionar una moneda de referencia e introduce su denominación en la consola. Con el diámetro detectado y el diámetro oficial se calcula la escala en milímetros por píxel.
+```python
+vid = cv2.VideoCapture(0)
 
-Para que la estimación sea fiable, las monedas deben estar aproximadamente a la misma distancia de la cámara que la moneda de referencia. Si cambia la distancia, es necesario recalibrar.
+while True:
+    disponible, img = vid.read()
+    if not disponible:
+        break
 
-#### Clasificación por diámetro
+    gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bordes = cv2.Canny(gris, 25, 120)
+    bordes = cv2.morphologyEx(
+        bordes, cv2.MORPH_CLOSE, kernel, iterations=2
+    )
+```
 
-A diferencia de la versión de imagen fija, la versión de webcam **clasifica únicamente por diámetro**. Para cada candidato, convierte el diámetro detectado a milímetros y lo compara con los diámetros oficiales de las ocho denominaciones de euro. Se selecciona la denominación con menor error y se acepta si la diferencia es igual o inferior a **1,5 mm**.
+En este caso, Canny utiliza los umbrales 25 y 120. Se vuelven a extraer los contornos y se filtran por área y circularidad; el umbral de circularidad es `0.70`, algo más exigente que en la imagen fija. También se descartan contornos con menos de cinco puntos.
 
-Las monedas clasificadas se muestran con el contorno verde y su valor. El importe se vuelve a calcular en cada fotograma, por lo que representa **el valor estimado de las monedas visibles en ese momento**, no una suma acumulada.
+Estos filtros se repiten en cada fotograma, por lo que la detección se actualiza a medida que se mueven la cámara o las monedas.
 
-Durante la ejecución se pueden utilizar estos controles:
+### 2.2. Calibración interactiva
 
-- **1–9:** seleccionar la moneda de referencia cuando no hay calibración.
-- **C:** eliminar la calibración anterior y realizarla de nuevo.
-- **ESC:** salir del programa, liberar la cámara y cerrar las ventanas.
+Al comenzar, el programa todavía no conoce la escala. Muestra los candidatos numerados y espera a que el usuario pulse una tecla entre `1` y `9` para seleccionar uno. Después solicita la denominación de esa moneda y calcula `mm_por_pixel` usando su diámetro oficial.
 
-**Resultado sobre la imagen en tiempo real:**
+Una vez calibrado, conserva la escala para procesar los siguientes fotogramas. La tecla `C` permite reiniciar la calibración si se cambia la posición de la cámara o se necesita seleccionar otra referencia.
+
+### 2.3. Clasificación en cada fotograma
+
+En tiempo real no se analiza el color. Para cada candidato, el diámetro en píxeles se convierte a milímetros y se compara con los ocho diámetros oficiales.
+
+```python
+diametro_mm = diametro_px * mm_por_pixel
+
+error_minimo = float("inf")
+for valor, diametro_oficial in diametros_euro.items():
+    error = abs(diametro_mm - diametro_oficial)
+    if error < error_minimo:
+        error_minimo = error
+        mejor_valor = valor
+
+if error_minimo <= tolerancia:
+    total += mejor_valor
+    clasificadas += 1
+```
+
+El programa busca la denominación con menor diferencia y solo la acepta si el error es como máximo `1.5 mm`. A diferencia de la versión fija, aquí no se restringe la búsqueda por familia de color, por lo que monedas con diámetros parecidos pueden confundirse.
+
+El total se calcula de nuevo en cada fotograma a partir de las monedas clasificadas que se ven en ese momento; por eso, puede variar si una moneda entra o sale del encuadre.
+
+### 2.4. Controles y cierre
+
+- **Teclas `1`–`9`:** elegir la moneda de referencia durante la calibración.
+- **`C`:** reiniciar la calibración.
+- **`ESC`:** terminar la ejecución.
+
+Al salir del bucle, el programa libera la cámara y cierra las ventanas:
+
+```python
+vid.release()
+cv2.destroyAllWindows()
+```
+
+Esto permite que la webcam quede disponible para otras aplicaciones.
+
+### 2.5. Resultado en tiempo real
 
 ![Clasificación de monedas en tiempo real](resultados/monedas_webcam.gif)
 
 **RESULTADO FINAL**
-Candidatos detectados: 8
-Monedas clasificadas: 8
-Monedas dudosas: 0
-Valor total estimado: 3.88 €
+- Candidatos detectados: 8
+- Monedas clasificadas: 8
+- Monedas dudosas: 0
+- Valor total estimado: 3.88 €
 
-### 3. Limitaciones
+## 3. Limitaciones
 
-El resultado depende de la iluminación, los reflejos y la calidad de los contornos. Las monedas solapadas pueden detectarse como un único objeto y los colores pueden variar con la luz. Además, si cambia la distancia a la cámara después de calibrar, la conversión de píxeles a milímetros deja de ser fiable.
-
-La versión de imagen fija combina color y diámetro, mientras que la versión en tiempo real utiliza solo el diámetro. Por ello, en la webcam pueden confundirse denominaciones de tamaños parecidos, especialmente cuando existe error de calibración. También pueden aparecer falsas detecciones si otros objetos tienen una forma suficientemente circular.
-
-
-
+- La detección depende de la iluminación, las sombras, los reflejos y el contraste entre las monedas y el fondo.
+- La calibración funciona mejor si todas las monedas están aproximadamente a la misma distancia y orientación que la moneda de referencia.
+- En tiempo real, la clasificación se basa solo en el diámetro, por lo que puede confundir denominaciones con medidas cercanas.
+- En el código de la webcam, `dudosas` se muestra sin inicializarse ni actualizarse. Además, `color` y `etiqueta` pueden quedar sin definir si un candidato no supera la tolerancia; conviene inicializarlas antes de dibujar cada candidato.
 
 ## TAREA: clasificación de microplásticos
 
