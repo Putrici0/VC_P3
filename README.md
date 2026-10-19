@@ -224,12 +224,6 @@ Esto permite que la webcam quede disponible para otras aplicaciones.
 
 ![Clasificación de monedas en tiempo real](resultados/monedas_webcam.gif)
 
-**RESULTADO FINAL**
-- Candidatos detectados: 8
-- Monedas clasificadas: 8
-- Monedas dudosas: 0
-- Valor total estimado: 3.88 €
-
 ## 3. Limitaciones
 
 - La detección depende de la iluminación, las sombras, los reflejos y el contraste entre las monedas y el fondo.
