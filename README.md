@@ -29,7 +29,7 @@ El objetivo de esta tarea es **detectar monedas de euro, reconocer su valor y ca
 
 ### 1. Detección en una imagen fija
 
-Trabajamos con `imagenes/monedas/money.jpg`. Primero convertimos la imagen a escala de grises y aplicamos un filtro gaussiano para suavizar pequeñas variaciones. Después, **Canny** detecta los bordes y un **cierre morfológico** conecta los tramos que hayan quedado separados. Finalmente, `findContours()` obtiene los contornos externos.
+Trabajamos con `imagenes/monedas/Monedas.jpg`. Primero convertimos la imagen a escala de grises y aplicamos un filtro gaussiano para suavizar pequeñas variaciones. Después, **Canny** detecta los bordes y un **cierre morfológico** conecta los tramos que hayan quedado separados. Finalmente, `findContours()` obtiene los contornos externos.
 
 ```python
 gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -48,7 +48,7 @@ La clasificación combina **color y tamaño**. El color se analiza en HSV median
 
 **Resultado sobre la imagen fija:**
 
-![Clasificación de monedas en imagen fija](resultados/monedas_imagen.png)
+![Clasificación de monedas en imagen fija](resultados/deteccion_monedas.jng)
 
 ### 2. Detección de monedas en tiempo real
 
