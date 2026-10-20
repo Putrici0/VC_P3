@@ -30,49 +30,74 @@ La primera tarea dispone de un modo de ejecución con webcam, por lo que se nece
 
 ## Tarea 1. Detección y clasificación de monedas
 
-La tarea tiene dos implementaciones: una procesa `imagenes/monedas/Monedas.jpg` y calcula el total de dinero; la otra procesa fotogramas de la webcam. Ambas detectan contornos y estiman diámetros, pero **no clasifican igual**: la imagen fija utiliza también el color para elegir la familia de monedas, mientras que la webcam compara el diámetro con las ocho denominaciones.
+Para esta tarea se ha realizado una primera implementación que procesa la imagen `imagenes/monedas/Monedas.jpg` y estima el valor total de las monedas detectadas. El procedimiento se basa en detectar contornos, filtrar los que pueden corresponder a monedas, calibrar la escala utilizando una moneda de referencia y comparar los diámetros estimados con los oficiales. Además, posteriormente se realiza otra implementación aplicando un procedimiento similar pero para las imágenes de un vídeo en tiempo real.
 
 ### 1.1. Carga, bordes y contornos
 
-Se convierte la imagen a escala de grises y se aplica un suavizado gaussiano antes de detectar bordes:
+Se carga la imagen, se convierte a escala de grises y se detectan sus bordes mediante Canny:
 
 ```python
+img = cv2.imread("imagenes/monedas/Monedas.jpg")
+
+if img is None:
+    raise FileNotFoundError(
+        "No se ha podido cargar imagenes/monedas/Monedas.jpg"
+    )
+
 gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-suave = cv2.GaussianBlur(gris, (5, 5), 0)
-bordes = cv2.Canny(suave, 50, 150)
+bordes = cv2.Canny(gris, 30, 150)
 
 kernel = np.ones((5, 5), np.uint8)
 bordes = cv2.morphologyEx(
     bordes, cv2.MORPH_CLOSE, kernel, iterations=2
 )
+
 contornos, _ = cv2.findContours(
     bordes, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
 )
 ```
 
-`GaussianBlur((5, 5), 0)` reduce pequeñas variaciones que podrían generar bordes falsos. El tamaño `5 × 5` es la ventana del filtro. En `Canny(suave, 50, 150)`, `50` es el umbral inferior y `150` el superior: los dos controlan qué cambios de intensidad se consideran bordes. El cierre morfológico (`MORPH_CLOSE`) usa un kernel de `5 × 5` y dos iteraciones para unir interrupciones pequeñas. `RETR_EXTERNAL` recupera solo los contornos exteriores, evitando procesar contornos internos de una misma forma.
+`cv2.imread()` carga la imagen desde la ruta indicada. Si no se encuentra o no puede abrirse, devuelve `None`, por lo que se lanza una excepción para evitar continuar con una imagen inexistente. La conversión a escala de grises simplifica el procesamiento, ya que la detección de bordes no necesita trabajar con los tres canales de color.
+
+En `Canny(gris, 30, 150)`, `30` es el umbral inferior y `150` el superior. Estos valores determinan qué cambios de intensidad se consideran bordes. Un umbral inferior más reducido permite conservar bordes más débiles, mientras que el superior ayuda a identificar los bordes más marcados. Esta configuración permite detectar mejor los límites de las monedas en la imagen utilizada.
+
+El cierre morfológico (`MORPH_CLOSE`) utiliza un kernel de `5 × 5` y dos iteraciones para unir pequeñas interrupciones en los bordes. Después, `RETR_EXTERNAL` recupera únicamente los contornos exteriores, evitando procesar los contornos internos como candidatos independientes.
 
 ### 1.2. Filtrado de candidatos
 
-No todos los contornos son monedas. Se descartan formas con área demasiado pequeña o demasiado grande respecto a la imagen y se comprueba su circularidad:
+No todos los contornos detectados corresponden a monedas. Para reducir los falsos positivos, se descartan aquellos con un área demasiado pequeña o demasiado grande y se comprueba su circularidad:
 
 ```python
-if area < area_img * 0.0002 or area > area_img * 0.20:
-    continue
+area_img = alto_img * ancho_img
 
-circularidad = (4 * np.pi * area) / (perimetro ** 2)
-if circularidad < 0.65:
-    continue
+for c in contornos:
+    area = cv2.contourArea(c)
+    perimetro = cv2.arcLength(c, True)
 
-centro, radio = cv2.minEnclosingCircle(c)
-diametro_px = radio * 2
+    if perimetro == 0:
+        continue
+
+    if area < area_img * 0.0002 or area > area_img * 0.20:
+        continue
+
+    circularidad = (4 * np.pi * area) / (perimetro ** 2)
+
+    if circularidad < 0.70:
+        continue
+
+    centro, radio = cv2.minEnclosingCircle(c)
+    diametro_px = radio * 2
 ```
 
-Los límites `0.0002` y `0.20` equivalen al `0,02 %` y al `20 %` del área total: eliminan ruido diminuto y regiones que ocupan gran parte de la imagen. La circularidad se calcula como `4π · área / perímetro²`; un círculo ideal se aproxima a `1` y una forma irregular obtiene un valor menor. El umbral `0.65` tolera imperfecciones sin aceptar demasiadas formas no circulares. Para cada candidato, `minEnclosingCircle` estima el círculo mínimo que contiene el contorno; su diámetro se guarda en píxeles.
+Los límites `0.0002` y `0.20` representan, respectivamente, el `0,02 %` y el `20 %` del área total de la imagen. El primero elimina regiones diminutas que pueden corresponder a ruido, mientras que el segundo descarta regiones excesivamente grandes.
 
-### 1.3. Calibración: pasar de píxeles a milímetros
+La circularidad se calcula mediante la expresión `4π · área / perímetro²`. Un círculo ideal tiene una circularidad próxima a `1`, mientras que las formas irregulares presentan valores inferiores. El umbral `0.70` permite conservar contornos aproximadamente circulares sin aceptar demasiadas formas que se alejen de la geometría de una moneda. La comprobación de que el perímetro no sea cero evita una división indefinida.
 
-El tamaño en píxeles no equivale directamente a un diámetro físico. Por eso se elige uno de los candidatos, se indica su valor real y se usa su diámetro oficial para calcular la escala:
+Para cada candidato que supera estos filtros, `minEnclosingCircle()` calcula el círculo mínimo que contiene el contorno. A partir de su radio se obtiene el diámetro en píxeles, que se almacena junto con el contorno y las coordenadas de su centro.
+
+### 1.3. Selección de la moneda de referencia y calibración
+
+Como el diámetro en píxeles depende del tamaño y de la resolución de la imagen, es necesario convertirlo a una medida física. Para ello, el programa muestra los candidatos numerados y permite seleccionar una moneda cuyo valor se conozca:
 
 ```python
 diametros_euro = {
@@ -80,86 +105,166 @@ diametros_euro = {
     0.20: 22.25, 0.50: 24.25, 1.00: 23.25, 2.00: 25.75
 }
 
+indice_ref = int(input(
+    "\nNúmero de la moneda de referencia: "
+)) - 1
+
+diametro_ref = candidatos[indice_ref]["diametro_px"]
+
+valor_ref = float(input(
+    "Valor de la moneda (0.01, 0.02, 0.05, 0.10, "
+    "0.20, 0.50, 1 o 2): "
+).replace(",", "."))
+
 mm_por_pixel = diametros_euro[valor_ref] / diametro_ref
-diametro_mm = diametro_px * mm_por_pixel
 ```
 
-Los valores del diccionario son los diámetros oficiales en milímetros. Si, por ejemplo, una moneda de referencia mide 200 píxeles y su diámetro oficial es 20 mm, la escala resultante sería `0,1 mm/píxel`. La calibración debe hacerse con una moneda bien detectada y situada en el mismo plano que las demás; la perspectiva o una referencia mal seleccionada introducen error en todos los diámetros.
+El diccionario `diametros_euro` contiene los diámetros oficiales de las ocho denominaciones, expresados en milímetros. El usuario selecciona el número de una moneda detectada e introduce su valor, admitiendo tanto el punto como la coma decimal.
 
-### 1.4. Clasificación de la imagen fija: primero color, después diámetro
+La escala se obtiene dividiendo el diámetro oficial de la moneda de referencia entre su diámetro estimado en píxeles:
 
-La imagen se convierte a HSV para estimar la familia metálica de cada contorno. Se crea una máscara del interior de la moneda y se ignoran los píxeles demasiado oscuros o demasiado brillantes, porque suelen corresponder a sombras o reflejos:
+`mm_por_pixel = diámetro oficial / diámetro en píxeles`
+
+Por ejemplo, si una moneda de referencia tiene un diámetro oficial de `20 mm` y se detecta con un diámetro de `200 píxeles`, la escala sería de `0,1 mm/píxel`. A partir de ese momento, todos los diámetros detectados se pueden expresar en milímetros multiplicándolos por dicha escala.
+
+La calibración debe realizarse con una moneda bien detectada y situada en el mismo plano que las demás. Una referencia mal seleccionada, una medición imprecisa o los efectos de la perspectiva pueden introducir errores en la clasificación de todas las monedas.
+
+### 1.4. Clasificación por diámetro
+
+Una vez calculada la escala, el programa compara el diámetro estimado de cada candidato con los diámetros oficiales:
 
 ```python
-validos = (brillos > 30) & (brillos < 245)
+tolerancia_mm = 1.5
+denominaciones_euro = list(diametros_euro.keys())
 
-cobrizo = (((tonos <= 12) | (tonos >= 170)) & (saturaciones > 45))
-dorado = ((tonos > 12) & (tonos <= 35) & (saturaciones > 45))
-metal_neutro = saturaciones < 65
+for c in candidatos:
+    diametro_mm = c["diametro_px"] * mm_por_pixel
+
+    valor_probable = None
+    error_minimo = float("inf")
+
+    for valor in denominaciones_euro:
+        error = abs(diametros_euro[valor] - diametro_mm)
+
+        if error < error_minimo:
+            error_minimo = error
+            valor_probable = valor
+
+    color = (0, 0, 255)
+    etiqueta = "Inicial"
+
+    if error_minimo <= tolerancia_mm:
+        total += valor_probable
+        clasificadas += 1
+        color = (0, 200, 0)
+        etiqueta = f"{valor_probable:.2f} EUR"
 ```
 
-En OpenCV, el tono HSV ocupa el rango `0–179`, mientras que saturación y brillo ocupan `0–255`. Los límites de tono `12` y `35` separan aproximadamente los tonos cobrizos y dorados. La saturación mínima `45` evita tratar píxeles casi grises como colores metálicos; `S < 65` sirve para detectar zonas plateadas. No se decide por un único píxel: se calcula la proporción de píxeles de cada tipo dentro de la moneda.
+Para cada moneda, se calcula primero el diámetro en milímetros. Después se recorren las ocho denominaciones y se calcula el error absoluto entre el diámetro estimado y el diámetro oficial de cada una. Se selecciona como candidata la denominación con el menor error.
 
-La función `detectar_color()` asigna las familias con estas reglas:
+La tolerancia `1.5 mm` establece el error máximo permitido para aceptar una clasificación. Si la diferencia entre el diámetro estimado y el oficial más cercano no supera ese valor, se acepta la denominación, se incrementa el contador de monedas clasificadas y se añade su valor al total. Si el error es superior, la moneda no debería contabilizarse.
+
+Este método es sencillo y permite clasificar monedas sin recurrir a técnicas de aprendizaje automático. Sin embargo, tiene una limitación importante: algunas denominaciones tienen diámetros relativamente próximos, por lo que los errores de detección o calibración pueden provocar confusiones.
+
+### 1.5. Visualización de los resultados
+
+El programa muestra primero una imagen con los candidatos numerados para facilitar la selección de la moneda de referencia. Tras la calibración y la clasificación, vuelve a mostrar la imagen con las denominaciones estimadas y el total calculado:
 
 ```python
-if prop_cobrizo > 0.30 and prop_cobrizo > prop_dorado:
-    return "cobre"
-if prop_dorado > 0.40 and prop_neutro < 0.40:
-    return "dorado"
-if prop_dorado > 0.15 and prop_neutro > 0.30:
-    return "bimetalica"
-return "desconocido"
+cv2.drawContours(vista, [c["contorno"]], -1, color, 2)
+
+cv2.putText(
+    vista, etiqueta, (c["x"] - 35, c["y"]),
+    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2
+)
+
+cv2.putText(
+    vista, f"Total: {total:.2f} EUR", (10, 30),
+    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
+)
 ```
 
-Así, se consideran cobrizas las monedas de 1, 2 y 5 céntimos; doradas, las de 10, 20 y 50 céntimos; y bimetálicas, las de 1 y 2 euros. Los porcentajes `0.30`, `0.40` y `0.15` son proporciones mínimas de píxeles que deben cumplir los criterios; `0.40` en `prop_neutro < 0.40` limita cuánto metal neutro puede tener una moneda clasificada como dorada. Son umbrales heurísticos dependientes de la iluminación y de la imagen.
+`drawContours()` dibuja el contorno de cada moneda y `putText()` añade su denominación junto a ella. El color verde utilizado en OpenCV se representa mediante `(0, 200, 0)` para las monedas clasificadas. El total se muestra con dos decimales mediante el formato `:.2f`, lo que permite presentar el resultado en euros.
 
-Una vez determinada la familia, solo se comparan los diámetros oficiales de sus denominaciones. Se elige la denominación con menor diferencia y se acepta si el error no supera `1.5 mm`:
+Finalmente, se imprime un resumen con el número de monedas detectadas y el valor total estimado. Es importante distinguir entre el número de candidatos detectados y el número de monedas correctamente clasificadas: detectar un contorno no garantiza que su denominación se haya podido determinar de forma fiable.
 
-```python
-error = abs(diametros_euro[valor] - diametro_mm)
+### Consideraciones y limitaciones
 
-if valor_probable is not None and error_minimo <= tolerancia_mm:
-    total += valor_probable
-    clasificadas += 1
-else:
-    dudosas += 1
-```
-
-La tolerancia `1.5 mm` permite pequeñas imprecisiones de borde y calibración. Si la familia es desconocida o ningún diámetro se acerca lo suficiente, la moneda se marca como dudosa y no se suma. Esto evita forzar una denominación cuando los datos no son consistentes.
-
-### Resultado de la imagen fija
-
-En la ejecución incluida en el notebook se detectaron **8 candidatos**, se clasificaron **8 monedas**, no hubo monedas dudosas y el total estimado fue **3,88 €**.
+El resultado depende de la calidad de los contornos, de la selección de la moneda de referencia y de la tolerancia utilizada. La iluminación, las sombras, los reflejos y la perspectiva pueden alterar las medidas estimadas. Asimismo, el uso exclusivo del diámetro limita la capacidad de distinguir denominaciones con tamaños similares. Aún así, como se puede comprobar en la siguiente imagen, los resultados son muy positivos.
 
 ![Resultado de la detección y clasificación de monedas](resultados/deteccion_monedas.jpg)
 
-### 1.5. Webcam: funcionamiento en tiempo real
+### 1.6. Webcam: funcionamiento en tiempo real
 
-La versión de webcam usa `cv2.VideoCapture(0)` para abrir la cámara predeterminada y ejecuta el procesamiento fotograma a fotograma. A diferencia de la imagen fija, no aplica suavizado gaussiano antes de Canny y usa umbrales más bajos:
+La segunda implementación realiza la detección y clasificación de monedas a partir de los fotogramas capturados por la webcam. A diferencia de la imagen fija, el procesamiento se repite continuamente y permite visualizar cómo cambia el resultado cuando se mueven las monedas.
+
+#### 1.6.1. Captura y detección en vídeo
+
+La cámara se abre mediante `cv2.VideoCapture(0)` y el programa procesa cada fotograma dentro de un bucle:
 
 ```python
-gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-bordes = cv2.Canny(gris, 25, 120)
-bordes = cv2.morphologyEx(
-    bordes, cv2.MORPH_CLOSE, kernel, iterations=2
-)
-contornos, _ = cv2.findContours(
-    bordes, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-)
+vid = cv2.VideoCapture(0)
+
+while True:
+    disponible, img = vid.read()
+
+    if not disponible:
+        print("No se ha podido leer el fotograma.")
+        break
+
+    gris = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    bordes = cv2.Canny(gris, 25, 120)
 ```
 
-`Canny(25, 120)` intenta conservar bordes con menor contraste que los de la imagen fija, útil cuando el vídeo tiene iluminación variable; también puede aumentar el ruido. El filtro de área se mantiene (`0.0002`–`0.20` del área del fotograma), pero el umbral de circularidad sube de `0.65` a `0.70`, descartando formas menos redondas.
+`vid.read()` devuelve un indicador que permite comprobar si se ha obtenido correctamente el fotograma. Si la captura falla, el programa termina el bucle. Para el vídeo se utilizan los umbrales `25` y `120` en Canny, en lugar de `30` y `150`, empleados en la imagen fija. El resto del proceso de detección y filtrado de contornos mantiene el mismo planteamiento que en el apartado anterior.
 
-El flujo de uso está pensado para calibrar antes de clasificar:
+#### 1.6.2. Calibración interactiva
 
-1. Antes de calibrar, se dibujan los contornos candidatos y se numeran en pantalla.
-2. Se pulsa una tecla del `1` al `9` para elegir el candidato que servirá como referencia.
-3. En la consola se introduce el valor de esa moneda (`0.01`, `0.02`, `0.05`, `0.10`, `0.20`, `0.50`, `1` o `2`). El programa calcula `mm_por_pixel` a partir del diámetro oficial y del diámetro detectado.
-4. En cada fotograma posterior, convierte el diámetro de cada candidato a milímetros, compara con las ocho denominaciones y suma las que estén dentro de la tolerancia de `1.5 mm`.
-5. Se pulsa `C` para volver a calibrar y `ESC` para liberar la cámara y cerrar la ventana.
+La principal diferencia respecto a la imagen fija es que la referencia se selecciona directamente sobre el vídeo. Antes de calibrar, los candidatos se muestran numerados para poder elegir uno de ellos:
 
-La comparación de la webcam es distinta de la imagen fija: **no usa HSV para separar las familias cobre, dorado y bimetálica**. Compara directamente con las ocho denominaciones. Por eso, monedas de diámetros próximos pueden confundirse y la calibración influye mucho en el resultado. Además, la escala supone que las monedas están aproximadamente a la misma distancia y plano que la moneda de referencia; al acercar una moneda a la cámara, su tamaño en píxeles cambia y la estimación deja de ser fiable.
+```python
+if not calibrado:
+    for i, c in enumerate(candidatos):
+        cv2.drawContours(
+            vista, [c["contorno"]], -1, (0, 255, 0), 2
+        )
+        cv2.putText(
+            vista, str(i + 1), (c["x"], c["y"]),
+            font, 0.8, (0, 0, 255), 2
+        )
+```
+
+El procedimiento consiste en pulsar una tecla del `1` al `9` para seleccionar la moneda de referencia e introducir su valor en la consola. Con el diámetro detectado y el diámetro oficial correspondiente se calcula la escala en milímetros por píxel, igual que en la imagen fija.
+
+Las variables `calibrado` y `mm_por_pixel` controlan este proceso. Mientras `calibrado` sea `False`, se muestran los candidatos numerados; una vez establecida la escala, comienza la clasificación automática de los fotogramas posteriores.
+
+#### 1.6.3. Clasificación y actualización del resultado
+
+Una vez calibrado el sistema, cada fotograma se clasifica utilizando los diámetros oficiales y la tolerancia de `1.5 mm` explicados en el apartado anterior. El total y el número de monedas clasificadas se inicializan de nuevo en cada iteración:
+
+```python
+total = 0.0
+clasificadas = 0
+
+for c in candidatos:
+    diametro_mm = c["diametro_px"] * mm_por_pixel
+```
+
+Esto significa que el importe mostrado corresponde a las monedas detectadas y clasificadas en el fotograma actual. **No se acumula el dinero a lo largo del vídeo**: si una moneda deja de aparecer en la imagen, deja de contribuir al total.
+
+La ventana muestra el importe estimado, el número de candidatos detectados y el número de monedas clasificadas. De esta forma, se puede comprobar en tiempo real si todas las monedas visibles se están detectando y cuántas han superado el criterio de clasificación.
+
+Al igual que en la imagen fija, la clasificación se basa exclusivamente en el diámetro. Por tanto, las monedas con tamaños similares pueden confundirse y los errores de calibración pueden afectar a los resultados.
+
+#### 1.6.4. Controles y recalibración
+
+El programa permite controlar la ejecución mediante el teclado:
+
+- **Teclas del `1` al `9`:** seleccionan la moneda de referencia antes de calibrar.
+- **`C`:** reinicia la calibración para seleccionar una nueva referencia.
+- **`ESC`:** finaliza la ejecución y cierra la cámara y las ventanas.
+
+La recalibración resulta útil si cambian las condiciones de captura, aunque para obtener medidas fiables las monedas deben permanecer aproximadamente en el mismo plano y a la misma distancia de la cámara que la referencia. Si se acercan o se alejan, su diámetro en píxeles cambia y la escala calculada puede dejar de ser válida.
 
 ### Resultado en tiempo real
 
